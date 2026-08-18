@@ -7,6 +7,7 @@ import asyncio
 import enum
 import json
 import logging
+import subprocess
 import time
 import urllib
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple, Union, cast
@@ -20,6 +21,65 @@ from .util import run_default_executor
 from .websockets_types import WebSocketClientProtocol
 
 logger = logging.getLogger(__name__)
+
+
+def authenticate_pam(username: str, password: str) -> bool:
+    """Authenticate a user through the host's PAM/SSSD configuration."""
+    if not settings.PAMTESTER_PATH or not username or "\n" in password or "\r" in password:
+        return False
+
+    try:
+        result = subprocess.run(
+            [
+                settings.PAMTESTER_PATH,
+                settings.PAM_SERVICE,
+                username,
+                "authenticate",
+                "acct_mgmt",
+            ],
+            # SSSD accepts password+OTP in the first response. If it elects to
+            # display separate 2FA prompts, the second response must be empty.
+            input=password + "\n\n",
+            encoding="utf-8",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=settings.IPA_AUTHENTICATION_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    return result.returncode == 0
+
+
+def get_ipa_authorized_keys(username: str) -> List[asyncssh.SSHKey]:
+    """Return the SSH public keys SSSD has cached for an IPA user."""
+    if not settings.AUTHORIZED_KEYS_COMMAND or not username:
+        return []
+
+    try:
+        result = subprocess.run(
+            [*settings.AUTHORIZED_KEYS_COMMAND, username],
+            encoding="utf-8",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=settings.IPA_AUTHENTICATION_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    if result.returncode != 0:
+        return []
+
+    keys = []
+    for line in result.stdout.splitlines():
+        try:
+            keys.append(asyncssh.import_public_key(line))
+        except asyncssh.KeyImportError:
+            logger.warning("Ignoring an invalid IPA SSH key for user %s", username)
+
+    return keys
 
 
 class ShellSSHListener:
@@ -76,6 +136,7 @@ class ShellSSHServer(asyncssh.SSHServer):
         self.site_name: Optional[str] = None
 
         self.sites: Optional[Dict[str, Tuple[int, str]]] = None
+        self.authorized_keys: Optional[List[asyncssh.SSHKey]] = None
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
         # This is called when a connection opens.
@@ -92,9 +153,44 @@ class ShellSSHServer(asyncssh.SSHServer):
             self.listener.servers.remove(self)
 
     def begin_auth(self, username: str) -> bool:
-        # Record the usernane
+        # Record the username and split the optional site selector before any
+        # authentication method runs.
         self.raw_username = username
+        self.username = username
+        self.site_name = None
+
+        if username != "root" and "/" in username:
+            self.username, self.site_name = username.split("/", 1)
+
         return True
+
+    def public_key_auth_supported(self) -> bool:
+        return bool(settings.AUTHORIZED_KEYS_COMMAND)
+
+    # AsyncSSH special-cases this method to allow it to be async
+    async def validate_public_key(  # pylint: disable=invalid-overridden-method
+        self,
+        username: str,
+        key: asyncssh.SSHKey,
+    ) -> bool:
+        auth_username = self.username
+        if (
+            not username
+            or username != self.raw_username
+            or not auth_username
+            or auth_username == "root"
+        ):
+            return False
+
+        if self.authorized_keys is None:
+            self.authorized_keys = await run_default_executor(
+                get_ipa_authorized_keys, auth_username
+            )
+
+        if key not in self.authorized_keys:
+            return False
+
+        return await run_default_executor(self._load_sites_sync, auth_username)
 
     def password_auth_supported(self) -> bool:
         return True
@@ -110,17 +206,11 @@ class ShellSSHServer(asyncssh.SSHServer):
 
         result = False
 
-        self.username = username
-
         if username == "root":
             result = bool(password)
         else:
-            # See the description of this format in __init__()
-            if "/" in username:
-                username, self.site_name = username.split("/", 1)
-                self.username = username
-            else:
-                self.site_name = None
+            if not self.username:
+                return False
 
             result = await run_default_executor(self._check_password_sync, self.username, password)
 
@@ -131,6 +221,14 @@ class ShellSSHServer(asyncssh.SSHServer):
         return True
 
     def _check_password_sync(self, username: str, password: str) -> bool:
+        if settings.PAMTESTER_PATH:
+            if not authenticate_pam(username, password):
+                return False
+
+            return self._load_sites_sync(username)
+
+        # Compatibility fallback for installations which have not configured
+        # PAM/SSSD on the shell host.
         try:
             res = manager_interface.make_manager_request(
                 "/shell-server/authenticate/",
@@ -142,6 +240,43 @@ class ShellSSHServer(asyncssh.SSHServer):
         else:
             self.sites = json.load(res)
             return True
+
+    def _load_sites_sync(self, username: str) -> bool:
+        if self.sites is not None:
+            return True
+
+        try:
+            res = manager_interface.make_manager_request(
+                "/shell-server/sites/",
+                method="POST",
+                data={"username": username},
+            )
+            sites = json.load(res)
+
+            if not isinstance(sites, dict):
+                return False
+
+            parsed_sites: Dict[str, Tuple[int, str]] = {}
+            for site_name, site_data in sites.items():
+                if (
+                    not isinstance(site_name, str)
+                    or not isinstance(site_data, list)
+                    or len(site_data) != 2
+                    or not isinstance(site_data[0], int)
+                    or not isinstance(site_data[1], str)
+                ):
+                    return False
+
+                parsed_sites[site_name] = (site_data[0], site_data[1])
+        except (
+            json.JSONDecodeError,
+            urllib.error.HTTPError,
+            manager_interface.ManagerRequestError,
+        ):
+            return False
+
+        self.sites = parsed_sites
+        return True
 
     def session_requested(self) -> asyncssh.SSHServerSession[Any]:
         if self.username == "root":

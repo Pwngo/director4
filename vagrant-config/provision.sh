@@ -74,8 +74,9 @@ if ! command -v python3.13 >/dev/null 2>&1; then
     exit 1
 fi
 
-# tmux and expect for the launch script, and krb5-user for kinit
-apt-get -y install tmux expect krb5-user
+# tmux and expect for the launch script, krb5-user for kinit, and pamtester for
+# exercising the shell server's PAM authentication stack
+apt-get -y install tmux expect krb5-user pamtester
 # Development files
 apt-get -y install libssl-dev libcrypto++-dev
 # Helpful utilities
@@ -105,6 +106,13 @@ cat <<EOF >/etc/krb5.conf
         kdc = kdc2.tjhsst.edu
     }
 
+EOF
+
+# Production IPA enrollment adds pam_sss to these common stacks. Keeping a
+# distinct service name also allows an IPA HBAC rule to target Director shell.
+cat <<'EOF' >/etc/pam.d/director-shell
+@include common-auth
+@include common-account
 EOF
 
 # Create users and databases

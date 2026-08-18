@@ -18,7 +18,7 @@ The router runs Nginx to forward requests to the orchestrator(s), as well as a s
 
 ## Shell
 
-The shell server runs an SSH server using AsyncSSH. It authenticates users and looks up their sites via the manager's `/shell-server/` endpoints, then connects to the orchestrator's Websocket server (`/ws/shell-server/`) to open a terminal into the user's site container.
+The shell server runs an SSH server using AsyncSSH. On an IPA-enrolled host, it authenticates passwords and OTPs through PAM/SSSD and retrieves IPA SSH keys with `sss_ssh_authorizedkeys`. After local authentication, it looks up the user's sites via the manager's `/shell-server/` endpoints, then connects to the orchestrator's Websocket server (`/ws/shell-server/`) to open a terminal into the user's site container.
 
 ## Communication between servers
 

@@ -77,3 +77,9 @@ After this, you will need to restart Nginx.
 Now you can start Celery with `pipenv run celery -A director worker`, and Daphne with `pipenv run daphne -b 127.0.0.1 -p 9000 director.asgi:application`. Both should be run as the user you created in the previous step (if you ran the commands immediately above, this is the `director` user). You may wish to launch them using [supervisor](http://supervisord.org/) or your distribution's init system.
 
 Note that you can run multiple Daphne workers. See [Nginx HTTP Load Balancing](https://docs.nginx.com/nginx/admin-guide/load-balancer/http-load-balancer/) for more information on how to set up Nginx to handle this.
+
+## Shell
+
+The shell host must be enrolled as an IPA client with SSSD's PAM and SSH responders enabled. Install `pamtester`, and create `/etc/pam.d/director-shell` with authentication and account stacks which include `pam_sss.so` (on Ubuntu, including `common-auth` and `common-account` is normally sufficient). The default shell settings invoke `/usr/bin/pamtester` for password and password-plus-OTP authentication and `/usr/bin/sss_ssh_authorizedkeys` for public-key authentication; their paths and the PAM service name can be overridden in `shell/shell/settings/secret.py`.
+
+The manager's `/shell-server/` routes include an endpoint which trusts the shell host's successful IPA authentication. These routes must only be reachable from the shell server, as described in the architecture document.

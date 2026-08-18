@@ -7,6 +7,16 @@ from directorutil.ssl_context import create_internal_client_ssl_context
 
 SERVER_HOST_KEY_FILES: List[str] = []
 
+# IPA authentication is delegated to the host's SSSD configuration. pamtester
+# runs the named PAM service for passwords (including password + OTP), while
+# sss_ssh_authorizedkeys retrieves SSH keys stored in IPA. Set either executable
+# to None to disable that integration. When PAMTESTER_PATH is disabled, password
+# authentication falls back to the manager's legacy kinit endpoint.
+PAMTESTER_PATH: Optional[str] = "/usr/bin/pamtester"
+PAM_SERVICE = "director-shell"
+AUTHORIZED_KEYS_COMMAND: Optional[List[str]] = ["/usr/bin/sss_ssh_authorizedkeys"]
+IPA_AUTHENTICATION_TIMEOUT: float = 15
+
 # This is a "host:port" combo.
 # Example: "localhost:6143"
 MANAGER_HOST: str = ""

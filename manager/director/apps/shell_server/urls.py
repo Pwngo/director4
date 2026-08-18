@@ -9,4 +9,5 @@ app_name = "shell_server"
 
 urlpatterns = [
     path("authenticate/", views.authenticate_view, name="authenticate"),
+    path("sites/", views.sites_view, name="sites"),
 ]

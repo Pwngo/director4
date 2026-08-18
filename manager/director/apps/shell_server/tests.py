@@ -15,3 +15,28 @@ class ShellServerTestCase(DirectorTestCase):
             )
 
         self.assertEqual(401, response.status_code)
+
+    def test_sites_view(self):
+        user = self.login(username="awilliam")
+        self.client.logout()
+
+        response = self.client.post(
+            reverse("shell_server:sites"),
+            data={"username": user.username},
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertJSONEqual(response.content, {})
+
+    def test_sites_view_rejects_unknown_user(self):
+        response = self.client.post(
+            reverse("shell_server:sites"),
+            data={"username": "does-not-exist"},
+        )
+
+        self.assertEqual(401, response.status_code)
+
+    def test_sites_view_requires_username(self):
+        response = self.client.post(reverse("shell_server:sites"))
+
+        self.assertEqual(400, response.status_code)
